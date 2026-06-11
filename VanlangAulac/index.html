@@ -1,0 +1,653 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0" />
+<title>AR Văn Lang - Âu Lạc</title>
+<script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.2/dist/mindar-image-aframe.prod.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/c-frame/aframe-extras@7.0.0/dist/aframe-extras.min.js"></script>
+
+<script>
+if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    alert("LỖI CAMERA: Vui lòng chạy trên HTTPS để điện thoại cho phép mở camera!");
+}
+
+// 1. CẢM ỨNG 3D VÀ HÌNH ẢNH 2D
+AFRAME.registerComponent('gesture-handler', {
+schema: { enabled: { default: true }, rotationFactor: { default: 5 }, minScale: { default: 0.1 }, maxScale: { default: 8 } },
+init: function () {
+this.handleScale = this.handleScale.bind(this);
+this.handleRotation = this.handleRotation.bind(this);
+this.isVisible = false;
+this.initialScale = this.el.object3D.scale.clone();
+this.scaleFactor = 1;
+// Bắt sự kiện theo thẻ mẹ để đảm bảo cảm ứng hoạt động chuẩn khi tải tĩnh
+const targetEl = this.el.closest('[mindar-image-target]');
+if (targetEl) {
+    targetEl.addEventListener("targetFound", () => { this.isVisible = true; });
+    targetEl.addEventListener("targetLost", () => { this.isVisible = false; });
+}
+},
+update: function () {
+this.el.sceneEl.addEventListener("onefingermove", this.handleRotation);
+this.el.sceneEl.addEventListener("twofingermove", this.handleScale);
+},
+handleRotation: function (event) {
+if (this.isVisible) {
+this.el.object3D.rotation.y += event.detail.positionChange.x * this.data.rotationFactor;
+}
+},
+handleScale: function (event) {
+if (this.isVisible) {
+this.scaleFactor *= (1 + event.detail.spreadChange / event.detail.startSpread);
+this.scaleFactor = Math.min(Math.max(this.scaleFactor, this.data.minScale), this.data.maxScale);
+this.el.object3D.scale.x = this.scaleFactor * this.initialScale.x;
+this.el.object3D.scale.y = this.scaleFactor * this.initialScale.y;
+this.el.object3D.scale.z = this.scaleFactor * this.initialScale.z;
+}
+}
+});
+
+AFRAME.registerComponent('gesture-detector', {
+init: function () {
+this.el.addEventListener('mousedown', (event) => { this.el.emit('rangeStart', event); });
+this.el.addEventListener('mousemove', (event) => { this.el.emit('onefingermove', { positionChange: { x: event.movementX / 100, y: event.movementY / 100 } }); });
+this.el.addEventListener('touchstart', (event) => {
+if(event.touches.length === 2) {
+this.startSpread = Math.hypot(event.touches[0].pageX - event.touches[1].pageX, event.touches[0].pageY - event.touches[1].pageY);
+}
+if(event.touches.length === 1) this.lastX = event.touches[0].clientX;
+});
+this.el.addEventListener('touchmove', (event) => {
+if (event.touches.length === 1) {
+const touch = event.touches[0];
+const movementX = touch.clientX - (this.lastX || touch.clientX);
+this.lastX = touch.clientX;
+this.el.emit('onefingermove', { positionChange: { x: movementX / 100, y: 0 } });
+}
+if (event.touches.length === 2) {
+const spread = Math.hypot(event.touches[0].pageX - event.touches[1].pageX, event.touches[0].pageY - event.touches[1].pageY);
+const spreadChange = spread - this.startSpread;
+this.el.emit('twofingermove', { spreadChange: spreadChange, startSpread: this.startSpread });
+this.startSpread = spread;
+}
+});
+}
+});
+
+// 2. TÁCH NỀN VIDEO
+AFRAME.registerComponent('blue-chromakey', {
+schema: {
+src: {type: 'selector'},
+color: {type: 'vec3', default: {x: 0.0, y: 1.0, z: 0.0}}, 
+similarity: {default: 0.25, type: 'number'},
+crop: {default: 0.02, type: 'number'}
+},
+init: function() {
+const videoEl = this.data.src;
+if (!videoEl) return;
+this.videoEl = videoEl;
+this.texture = new THREE.VideoTexture(videoEl);
+this.texture.minFilter = THREE.LinearFilter;
+this.texture.format = THREE.RGBAFormat;
+this.material = new THREE.ShaderMaterial({
+uniforms: {
+map: { value: this.texture },
+keyColor: { value: new THREE.Vector3(this.data.color.x, this.data.color.y, this.data.color.z) },
+similarity: { value: this.data.similarity },
+smoothness: { value: 0.08 },
+cropMargin: { value: this.data.crop } 
+},
+vertexShader: `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 ); }`,
+fragmentShader: `
+uniform sampler2D map; uniform vec3 keyColor; uniform float similarity; uniform float smoothness; uniform float cropMargin; varying vec2 vUv;
+void main() {
+if (vUv.y < cropMargin || vUv.y > (1.0 - cropMargin) || vUv.x < cropMargin || vUv.x > (1.0 - cropMargin)) { gl_FragColor = vec4(0.0); return; }
+vec4 texColor = texture2D(map, vUv);
+float d = distance(texColor.rgb, keyColor);
+float alpha = smoothstep(similarity, similarity + smoothness, d);
+gl_FragColor = vec4(texColor.rgb, texColor.a * alpha);
+}
+`,
+transparent: true, side: THREE.DoubleSide, depthTest: false
+});
+this.el.getObject3D('mesh').material = this.material;
+},
+tick: function() { 
+let isVisible = this.el.object3D.visible;
+let parentVisible = this.el.object3D.parent ? this.el.object3D.parent.visible : true;
+if (!isVisible || !parentVisible) return; 
+
+if (!this.videoEl || this.videoEl.paused || this.videoEl.readyState < 2) return;
+if (this.texture) this.texture.needsUpdate = true; 
+}
+});
+</script>
+
+<style>
+body { margin: 0; overflow: hidden; font-family: sans-serif; touch-action: none;}
+
+/* --- GIAO DIỆN THANH TẢI TRANG SIÊU ĐÁNG YÊU --- */
+#start-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.95); z-index: 9999; display: flex; flex-direction: column; justify-content: center; align-items: center; color: white; }
+#loading-container { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 20px; }
+.loading-text { font-size: 16px; margin-bottom: 20px; line-height: 1.6; color: #f8f9fa; font-style: italic; }
+.progress-box { width: 280px; height: 18px; background: rgba(255,255,255,0.2); border-radius: 20px; border: 2px solid #fff; overflow: hidden; position: relative; }
+#progress-bar { width: 0%; height: 100%; background: linear-gradient(90deg, #FF8C00, #FFD700); transition: width 0.3s ease; }
+#progress-percentage { margin-top: 15px; font-weight: bold; font-size: 22px; color: #FFD700; }
+#start-btn { display: none; padding: 15px 50px; font-size: 24px; font-weight: bold; background: #FF4500; color: white; border: none; border-radius: 50px; cursor: pointer; box-shadow: 0 0 20px rgba(255, 69, 0, 0.6); margin-top: 20px; animation: pulse 1.5s infinite; }
+@keyframes pulse { 0% { transform: scale(1); } 50% { transform: scale(1.05); } 100% { transform: scale(1); } }
+
+.ui-btn { position: fixed; width: 50px; height: 50px; background: white; border-radius: 50%; border: 3px solid #8B4513; color: #8B4513; font-size: 24px; font-weight: bold; z-index: 1000; cursor: pointer; display: none; justify-content: center; align-items: center; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+#info-btn { top: 20px; right: 20px; }
+#audio-btn { top: 80px; right: 20px; font-size: 20px;}
+#toggle-video-btn { top: 140px; right: 20px; font-size: 20px; background: #e3f2fd; } 
+#game-btn { top: 200px; right: 20px; font-size: 20px; background: #fff59d; }
+
+#info-modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); z-index: 10001; justify-content: center; align-items: center; flex-direction: column; }
+#info-content { max-width: 95%; max-height: 85%; border-radius: 10px; border: 2px solid white; object-fit: contain; }
+
+#menu-vanlang1 { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 300px; z-index: 2000; flex-direction: column; align-items: center; gap: 15px; }
+.stone-btn { width: 100%; padding: 15px 0; background-color: #a89f91; color: #3e2723; text-align: center; font-weight: bold; font-size: 18px; text-transform: uppercase; border: 2px solid #5d4037; border-radius: 8px; box-shadow: 3px 3px 0px #5d4037; cursor: pointer; }
+.stone-btn:active { transform: translate(2px, 2px); box-shadow: 1px 1px 0px #5d4037; }
+.row-btn { display: flex; gap: 10px; width: 100%; }
+
+#menu-vanlang14 { display: none; position: fixed; right: 20px; bottom: 80px; flex-direction: column; gap: 10px; z-index: 2000; }
+#menu-vanlang15 { display: none; position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); width: 90%; max-width: 400px; flex-direction: row; gap: 10px; z-index: 2000; justify-content: center; }
+.small-btn { background-color: rgba(255, 248, 220, 0.95); color: #8B4513; border: 2px solid #8B4513; padding: 10px 15px; border-radius: 8px; font-weight: bold; font-size: 13px; text-align: center; box-shadow: 2px 2px 0px #8B4513; cursor: pointer; flex: 1; white-space: nowrap;}
+.small-btn:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0px #8B4513; }
+
+#weather-alert { display: none; position: fixed; top: 30%; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 15px 30px; border-radius: 20px; font-weight: bold; font-size: 20px; z-index: 2001; text-align: center; }
+#back-btn { position: fixed; bottom: 30px; left: 50%; transform: translateX(-50%); padding: 10px 25px; background: #d32f2f; color: white; border-radius: 20px; border: 2px solid white; font-weight: bold; display: none; z-index: 2000; cursor: pointer; }
+#custom-alert { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; padding: 20px; border-radius: 10px; border: 3px solid #8B4513; color: #8B4513; font-weight: bold; z-index: 10002; text-align: center; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+
+.mindar-ui-overlay { display: none !important; }
+.mindar-ui-loading { display: none !important; }
+.mindar-ui-scanning { display: none !important; }
+</style>
+</head>
+
+<body>
+
+<div id="start-screen">
+    <div id="loading-container">
+        <div class="loading-text">
+            Dữ liệu mình nhiều quá, mình chạy hơi chậm,<br>bạn vui lòng đợi mình nhé hic hic 🥺
+        </div>
+        <div class="progress-box">
+            <div id="progress-bar"></div>
+        </div>
+        <div id="progress-percentage">0%</div>
+    </div>
+    <button id="start-btn">SẴN SÀNG</button>
+</div>
+
+<div id="info-btn" class="ui-btn">i</div>
+<div id="audio-btn" class="ui-btn">🔊</div>
+<div id="toggle-video-btn" class="ui-btn" title="Đổi Video/Mô hình">🧊</div>
+<div id="game-btn" class="ui-btn" title="Chơi Game">🎮</div>
+
+<div id="info-modal">
+<img id="info-content" src="" alt="Thông tin">
+<div style="color:white; margin-top:10px">(Chạm để đóng)</div>
+</div>
+
+<div id="custom-alert">Dữ liệu đang được cập nhật <br><br><span style="font-size:14px; color:gray;">Chạm để đóng</span></div>
+<div id="weather-alert">Nhiệt đới ẩm gió mùa</div>
+
+<div id="menu-vanlang1">
+<div class="stone-btn" onclick="selectSubVideo('vuahung')">👑 HÙNG VƯƠNG</div>
+<div class="row-btn">
+<div class="stone-btn" onclick="selectSubVideo('lachau')">📜 LẠC HẦU</div>
+<div class="stone-btn" onclick="selectSubVideo('lactuong')">⚔️ LẠC TƯỚNG</div>
+</div>
+<div class="stone-btn" onclick="selectSubVideo('bochinh')">👴 BỒ CHÍNH</div>
+</div>
+
+<div id="menu-vanlang14">
+<div class="small-btn" onclick="showWeather()">🌡️ NHIỆT ĐỘ</div>
+<div class="small-btn" onclick="showMinerals()">💎 KHOÁNG SẢN</div>
+</div>
+
+<div id="menu-vanlang15">
+<div class="small-btn" onclick="selectCulture('phungnguyen')">PHÙNG NGUYÊN</div>
+<div class="small-btn" onclick="selectCulture('dongson')">ĐÔNG SƠN</div>
+</div>
+
+<button id="back-btn" onclick="goBack()">🔄 QUAY LẠI</button>
+
+<a-scene mindar-image="imageTargetSrc: ./targets.mind; uiScanning: no; filterMinCF:0.001; filterBeta: 10;"
+color-space="sRGB" renderer="colorManagement: true, physicallyCorrectLights"
+vr-mode-ui="enabled: false" device-orientation-permission-ui="enabled: false"
+gesture-detector>
+
+<a-assets timeout="20000">
+<video id="v-vuahung" src="./vuahung.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+<video id="v-lachau" src="./lachau.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+<video id="v-lactuong" src="./lactuong.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+<video id="v-bochinh" src="./bochinh.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+
+<video id="v-vanlang2" src="./vanlang2.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+<video id="v-vanlang3" src="./vanlang3.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+<video id="v-vanlang6" src="./vanlang6.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+<video id="v-vanlang13" src="./vanlang13.mp4" crossorigin="anonymous" loop playsinline webkit-playsinline muted preload="none"></video>
+
+<a-asset-item id="m-vanlang2" src="./vanlang2.glb"></a-asset-item>
+<a-asset-item id="m-vanlang3" src="./vanlang3.glb"></a-asset-item>
+<a-asset-item id="m-vanlang4" src="./vanlang4.glb"></a-asset-item>
+<a-asset-item id="m-vanlang5" src="./vanlang5.glb"></a-asset-item>
+<a-asset-item id="m-vanlang6" src="./vanlang6.glb"></a-asset-item>
+<a-asset-item id="m-vanlang7" src="./vanlang7.glb"></a-asset-item>
+<a-asset-item id="m-vanlang8" src="./vanlang8.glb"></a-asset-item>
+<a-asset-item id="m-vanlang9" src="./vanlang9.glb"></a-asset-item>
+<a-asset-item id="m-vanlang10" src="./vanlang10.glb"></a-asset-item>
+<a-asset-item id="m-vanlang11" src="./vanlang11.glb"></a-asset-item>
+<a-asset-item id="m-vanlang12" src="./vanlang12.glb"></a-asset-item>
+<a-asset-item id="m-15b" src="./vanlang15b.glb"></a-asset-item>
+<a-asset-item id="m-15c" src="./vanlang15c.glb"></a-asset-item>
+
+<audio id="a-vanlang1" src="./vanlang1.mp3" preload="none"></audio>
+<audio id="a-vanlang2" src="./vanlang2.mp3" preload="none"></audio>
+<audio id="a-vanlang3" src="./vanlang3.mp3" preload="none"></audio>
+<audio id="a-vanlang4" src="./vanlang4.mp3" preload="none"></audio>
+<audio id="a-vanlang5" src="./vanlang5.mp3" preload="none"></audio>
+<audio id="a-vanlang6" src="./vanlang6.mp3" preload="none"></audio>
+<audio id="a-vanlang7" src="./vanlang7.mp3" preload="none"></audio>
+<audio id="a-vanlang8" src="./vanlang8.mp3" preload="none"></audio>
+<audio id="a-vanlang9" src="./vanlang9.mp3" preload="none"></audio>
+<audio id="a-vanlang10" src="./vanlang10.mp3" preload="none"></audio>
+<audio id="a-vanlang11" src="./vanlang11.mp3" preload="none"></audio>
+<audio id="a-vanlang12" src="./vanlang12.mp3" preload="none"></audio>
+<audio id="a-vanlang13" src="./vanlang13.mp3" preload="none"></audio>
+<audio id="a-vanlang14" src="./vanlang14.mp3" preload="none"></audio>
+<audio id="a-15a" src="./vanlang15a.mp3" preload="none"></audio>
+<audio id="a-15b" src="./vanlang15b.mp3" preload="none"></audio>
+<audio id="a-15c" src="./vanlang15c.mp3" preload="none"></audio>
+</a-assets>
+
+<a-camera position="0 0 0" look-controls="enabled: false"></a-camera>
+
+<a-entity id="t0" mindar-image-target="targetIndex: 0">
+    <a-plane id="plane-vuahung" rotation="0 0 0" position="0 0.5 0" height="2.2" width="1.6" visible="false" blue-chromakey="src: #v-vuahung; color: 0 0.698 1.0; crop: 0.05"></a-plane>
+    <a-plane id="plane-lachau" rotation="0 0 0" position="0 0.5 0" height="2.2" width="1.6" visible="false" blue-chromakey="src: #v-lachau; color: 0 0.698 1.0; crop: 0.05"></a-plane>
+    <a-plane id="plane-lactuong" rotation="0 0 0" position="0 0.5 0" height="2.2" width="1.6" visible="false" blue-chromakey="src: #v-lactuong; color: 0 0.698 1.0; crop: 0.05"></a-plane>
+    <a-plane id="plane-bochinh" rotation="0 0 0" position="0 0.5 0" height="2.2" width="1.6" visible="false" blue-chromakey="src: #v-bochinh; color: 0 0.698 1.0; crop: 0.05"></a-plane>
+</a-entity>
+
+<a-entity id="t1" mindar-image-target="targetIndex: 1">
+    <a-plane id="video-t1" visible="true" rotation="0 0 0" position="0 0 0" height="2" width="1.2" blue-chromakey="src: #v-vanlang2; color: 0.094 0 0.678"></a-plane>
+    <a-entity id="model-t1" visible="false" gltf-model="#m-vanlang2" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity>
+</a-entity>
+
+<a-entity id="t2" mindar-image-target="targetIndex: 2">
+    <a-plane id="video-t2" visible="true" rotation="0 0 0" position="0 0 0" height="2" width="1.2" blue-chromakey="src: #v-vanlang3; color: 0 1 0"></a-plane>
+    <a-entity id="model-t2" visible="false" gltf-model="#m-vanlang3" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity>
+</a-entity>
+
+<a-entity id="t3" mindar-image-target="targetIndex: 3"><a-entity gltf-model="#m-vanlang4" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+
+<a-entity id="t4" mindar-image-target="targetIndex: 4"><a-entity gltf-model="#m-vanlang5" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+
+<a-entity id="t5" mindar-image-target="targetIndex: 5">
+    <a-plane id="video-t5" visible="true" rotation="0 0 0" position="0 0 0" height="2" width="1.2" blue-chromakey="src: #v-vanlang6; color: 0 1 0"></a-plane>
+    <a-entity id="model-t5" visible="false" gltf-model="#m-vanlang6" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity>
+</a-entity>
+
+<a-entity id="t6" mindar-image-target="targetIndex: 6"><a-entity gltf-model="#m-vanlang7" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+<a-entity id="t7" mindar-image-target="targetIndex: 7"><a-entity gltf-model="#m-vanlang8" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+<a-entity id="t8" mindar-image-target="targetIndex: 8"><a-entity gltf-model="#m-vanlang9" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+<a-entity id="t9" mindar-image-target="targetIndex: 9"><a-entity gltf-model="#m-vanlang10" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+<a-entity id="t10" mindar-image-target="targetIndex: 10"><a-entity gltf-model="#m-vanlang11" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+<a-entity id="t11" mindar-image-target="targetIndex: 11"><a-entity gltf-model="#m-vanlang12" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity></a-entity>
+
+<a-entity id="t12" mindar-image-target="targetIndex: 12">
+    <a-plane id="video-t12" visible="true" rotation="0 0 0" position="0 0 0" height="2" width="1.2" blue-chromakey="src: #v-vanlang13; color: 0 1 0"></a-plane>
+</a-entity>
+
+<a-entity id="t13" mindar-image-target="targetIndex: 13">
+    <a-image id="img-14" src="./vanlang14.png" visible="false" rotation="0 0 0" position="0 0 0" height="2" width="1.2" gesture-handler></a-image>
+    <a-image id="img-14b" src="./vanlang14b.png" visible="false" rotation="0 0 0" position="0 0 0" height="2" width="1.2" gesture-handler></a-image>
+</a-entity>
+
+<a-entity id="t14" mindar-image-target="targetIndex: 14">
+    <a-image id="img-15" src="./vanlang15.png" visible="false" rotation="0 0 0" position="0 0 0" height="2" width="1.2" gesture-handler></a-image>
+    <a-entity id="model-15b" visible="false" gltf-model="#m-15b" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity>
+    <a-entity id="model-15c" visible="false" gltf-model="#m-15c" rotation="90 0 0" scale="1 1 1" gesture-handler animation-mixer></a-entity>
+</a-entity>
+
+</a-scene>
+
+<script>
+// --- LOGIC THANH TIẾN TRÌNH ---
+const loadingContainer = document.getElementById('loading-container');
+const startBtn = document.getElementById('start-btn');
+const progressBar = document.getElementById('progress-bar');
+const progressText = document.getElementById('progress-percentage');
+const sceneEl = document.querySelector('a-scene');
+
+let loadProgress = 0;
+let progressInterval = setInterval(() => {
+    loadProgress += Math.floor(Math.random() * 8) + 2; 
+    if (loadProgress >= 95) loadProgress = 95; // Giữ ở 95% chờ A-frame load xong
+    progressBar.style.width = loadProgress + '%';
+    progressText.innerText = loadProgress + '%';
+}, 400);
+
+function finishLoading() {
+    clearInterval(progressInterval);
+    progressBar.style.width = '100%';
+    progressText.innerText = '100%';
+    setTimeout(() => {
+        loadingContainer.style.display = 'none';
+        startBtn.style.display = 'block';
+    }, 600);
+}
+
+if (sceneEl.hasLoaded) {
+    finishLoading();
+} else {
+    sceneEl.addEventListener('loaded', finishLoading);
+}
+
+// --- LOGIC AR GỐC ---
+const startScreen = document.getElementById('start-screen');
+const infoBtn = document.getElementById('info-btn');
+const audioBtn = document.getElementById('audio-btn');
+const toggleVideoBtn = document.getElementById('toggle-video-btn');
+const gameBtn = document.getElementById('game-btn');
+const backBtn = document.getElementById('back-btn');
+const infoModal = document.getElementById('info-modal');
+const menuVanLang1 = document.getElementById('menu-vanlang1');
+const menuVanLang14 = document.getElementById('menu-vanlang14');
+const menuVanLang15 = document.getElementById('menu-vanlang15');
+const weatherAlert = document.getElementById('weather-alert');
+const customAlert = document.getElementById('custom-alert');
+
+let activeIdx = -1; 
+let isAudioPlaying = false;
+let isVideoMode = true; 
+let currentVideo = null; 
+let activeSubMenu = '';
+
+startBtn.addEventListener('click', () => {
+    startScreen.style.display = 'none';
+    const dummy = new Audio(); dummy.play().catch(()=>{});
+});
+
+function getVideoIdForTarget(idx) {
+    if (idx === 1) return 'v-vanlang2';
+    if (idx === 2) return 'v-vanlang3';
+    if (idx === 5) return 'v-vanlang6';
+    if (idx === 12) return 'v-vanlang13';
+    return null;
+}
+
+function resetAll() {
+    document.querySelectorAll('video[id^="v-"], audio[id^="a-"]').forEach(m => { 
+        m.pause(); 
+        m.currentTime = 0; 
+        m.muted = false; 
+    });
+    
+    infoBtn.style.display = 'none';
+    audioBtn.style.display = 'none';
+    toggleVideoBtn.style.display = 'none';
+    gameBtn.style.display = 'none'; 
+    backBtn.style.display = 'none';
+    menuVanLang1.style.display = 'none';
+    menuVanLang14.style.display = 'none';
+    menuVanLang15.style.display = 'none';
+    infoModal.style.display = 'none';
+    weatherAlert.style.display = 'none';
+    customAlert.style.display = 'none';
+    
+    ['plane-vuahung', 'plane-lachau', 'plane-lactuong', 'plane-bochinh'].forEach(id => { document.getElementById(id).setAttribute('visible', 'false'); });
+    
+    [1, 2, 5].forEach(idx => {
+        const m = document.getElementById(`model-t${idx}`);
+        const v = document.getElementById(`video-t${idx}`);
+        if(m) m.setAttribute('visible', 'false');
+        if(v) v.setAttribute('visible', 'true');
+    });
+
+    document.getElementById('img-14').setAttribute('visible', 'false');
+    document.getElementById('img-14b').setAttribute('visible', 'false');
+    document.getElementById('img-15').setAttribute('visible', 'false');
+    document.getElementById('model-15b').setAttribute('visible', 'false');
+    document.getElementById('model-15c').setAttribute('visible', 'false');
+
+    isAudioPlaying = false;
+    audioBtn.innerText = '🔊';
+    isVideoMode = true;
+    currentVideo = null;
+    activeSubMenu = '';
+}
+
+function stopAllMedia() {
+    if(currentVideo) { currentVideo.pause(); currentVideo = null; }
+    document.querySelectorAll('audio[id^="a-"]').forEach(a => a.pause());
+    ['v-vuahung', 'v-lachau', 'v-lactuong', 'v-bochinh'].forEach(id => {
+        let v = document.getElementById(id);
+        if(v) v.pause();
+    });
+}
+
+for (let i = 0; i < 15; i++) {
+    const entity = document.getElementById(`t${i}`);
+    if (!entity) continue;
+
+    entity.addEventListener('targetFound', () => {
+        if (activeIdx !== i) { resetAll(); }
+        activeIdx = i;
+        infoBtn.style.display = 'flex';
+        audioBtn.style.display = 'flex';
+        
+        currentAudioId = `a-vanlang${i + 1}`;
+        currentInfoId = `ttvanlang${i + 1}`;
+
+        if (i === 3) {
+            gameBtn.style.display = 'flex';
+        }
+
+        if (i === 0) {
+            menuVanLang1.style.display = 'flex';
+        } else if (i === 1 || i === 2 || i === 5 || i === 12) {
+            if (i !== 12) {
+                toggleVideoBtn.style.display = 'flex';
+                toggleVideoBtn.innerText = '🧊'; 
+            }
+            isVideoMode = true;
+            
+            let videoId = getVideoIdForTarget(i);
+            currentVideo = document.getElementById(videoId);
+            if (currentVideo) {
+                currentVideo.muted = isAudioPlaying;
+                try { currentVideo.currentTime = 0; } catch(e){}
+                currentVideo.play().catch(()=>{});
+            }
+        } else if (i === 13) {
+            menuVanLang14.style.display = 'flex';
+            document.getElementById('img-14').setAttribute('visible', 'true');
+        } else if (i === 14) {
+            menuVanLang15.style.display = 'flex';
+            document.getElementById('img-15').setAttribute('visible', 'true');
+            currentAudioId = 'a-15a';
+            currentInfoId = 'ttvanlang15a';
+        }
+    });
+
+    entity.addEventListener('targetLost', () => {
+        if (activeIdx === i) {
+            resetAll();
+            activeIdx = -1;
+        }
+    });
+}
+
+window.selectSubVideo = function(charName) {
+    menuVanLang1.style.display = 'none';
+    backBtn.style.display = 'block';
+
+    ['plane-vuahung', 'plane-lachau', 'plane-lactuong', 'plane-bochinh'].forEach(id => {
+        document.getElementById(id).setAttribute('visible', 'false');
+    });
+
+    const plane = document.getElementById(`plane-${charName}`);
+    const vid = document.getElementById(`v-${charName}`);
+    
+    if(plane) plane.setAttribute('visible', 'true');
+    if(vid) {
+        currentVideo = vid;
+        vid.muted = isAudioPlaying; 
+        try { vid.currentTime = 0; } catch(e){}
+        vid.play().catch(()=>{});
+    }
+}
+
+// CHỨC NĂNG THẺ 14
+window.showWeather = function() {
+    weatherAlert.style.display = 'block';
+    setTimeout(() => { weatherAlert.style.display = 'none'; }, 3000);
+}
+
+window.showMinerals = function() {
+    menuVanLang14.style.display = 'none';
+    backBtn.style.display = 'block';
+    document.getElementById('img-14').setAttribute('visible', 'false');
+    document.getElementById('img-14b').setAttribute('visible', 'true');
+}
+
+// CHỨC NĂNG THẺ 15
+window.selectCulture = function(type) {
+    menuVanLang15.style.display = 'none';
+    backBtn.style.display = 'block';
+    document.getElementById('img-15').setAttribute('visible', 'false');
+    
+    let currentAudio = document.getElementById(currentAudioId);
+    if (currentAudio) currentAudio.pause();
+
+    if (type === 'phungnguyen') {
+        document.getElementById('model-15b').setAttribute('visible', 'true');
+        currentAudioId = 'a-15b';
+        currentInfoId = 'ttvanlang15b';
+    } else {
+        document.getElementById('model-15c').setAttribute('visible', 'true');
+        currentAudioId = 'a-15c';
+        currentInfoId = 'ttvanlang15c';
+    }
+
+    if (isAudioPlaying) {
+        let newAudio = document.getElementById(currentAudioId);
+        if (newAudio) newAudio.play().catch(()=>{});
+    }
+}
+
+window.goBack = function() {
+    backBtn.style.display = 'none';
+    if (activeIdx === 0) {
+        ['plane-vuahung', 'plane-lachau', 'plane-lactuong', 'plane-bochinh'].forEach(id => {
+            document.getElementById(id).setAttribute('visible', 'false');
+        });
+        if(currentVideo) { currentVideo.pause(); currentVideo = null; }
+        menuVanLang1.style.display = 'flex';
+    } else if (activeIdx === 13) {
+        document.getElementById('img-14b').setAttribute('visible', 'false');
+        document.getElementById('img-14').setAttribute('visible', 'true');
+        menuVanLang14.style.display = 'flex';
+    } else if (activeIdx === 14) {
+        document.getElementById('model-15b').setAttribute('visible', 'false');
+        document.getElementById('model-15c').setAttribute('visible', 'false');
+        document.getElementById('img-15').setAttribute('visible', 'true');
+        menuVanLang15.style.display = 'flex';
+        
+        let oldAudio = document.getElementById(currentAudioId);
+        if (oldAudio) oldAudio.pause();
+        
+        currentAudioId = 'a-15a';
+        currentInfoId = 'ttvanlang15a';
+        if (isAudioPlaying) {
+            let defaultAudio = document.getElementById(currentAudioId);
+            if (defaultAudio) defaultAudio.play().catch(()=>{});
+        }
+    }
+}
+
+toggleVideoBtn.addEventListener('click', () => {
+    if (activeIdx !== 1 && activeIdx !== 2 && activeIdx !== 5) return;
+    
+    isVideoMode = !isVideoMode;
+    const model = document.getElementById(`model-t${activeIdx}`);
+    const plane = document.getElementById(`video-t${activeIdx}`);
+    let vidId = getVideoIdForTarget(activeIdx);
+    const vid = document.getElementById(vidId);
+
+    if (isVideoMode) {
+        model.setAttribute('visible', 'false');
+        plane.setAttribute('visible', 'true');
+        toggleVideoBtn.innerText = '🧊'; 
+        
+        currentVideo = vid;
+        if(vid) {
+            vid.muted = isAudioPlaying;
+            try { vid.currentTime = 0; } catch(e){}
+            vid.play().catch(()=>{});
+        }
+    } else {
+        plane.setAttribute('visible', 'false');
+        model.setAttribute('visible', 'true');
+        toggleVideoBtn.innerText = '🎬'; 
+        
+        if (vid) vid.pause();
+        currentVideo = null;
+    }
+});
+
+audioBtn.addEventListener('click', () => {
+    if (activeIdx === -1) return;
+    isAudioPlaying = !isAudioPlaying;
+    audioBtn.innerText = isAudioPlaying ? '🎵' : '🔊';
+
+    const audioFile = document.getElementById(currentAudioId);
+
+    if (isAudioPlaying) {
+        if (audioFile) audioFile.play().catch(()=>{});
+        if (currentVideo) currentVideo.muted = true;
+    } else {
+        if (audioFile) audioFile.pause();
+        if (currentVideo) currentVideo.muted = false;
+    }
+});
+
+infoBtn.addEventListener('click', () => {
+    if (activeIdx === -1) return;
+    
+    document.getElementById('info-content').src = `./${currentInfoId}.png`;
+    infoModal.style.display = 'flex';
+    
+    if (currentVideo) currentVideo.pause();
+    
+    const audioFile = document.getElementById(currentAudioId);
+    if (audioFile && isAudioPlaying) audioFile.pause();
+});
+
+infoModal.addEventListener('click', () => {
+    infoModal.style.display = 'none';
+    if (isAudioPlaying) {
+        const audioFile = document.getElementById(currentAudioId);
+        if(audioFile) audioFile.play().catch(()=>{});
+    }
+    if (currentVideo) {
+        currentVideo.play().catch(()=>{});
+    }
+});
+
+customAlert.addEventListener('click', () => {
+    customAlert.style.display = 'none';
+});
+
+gameBtn.addEventListener('click', () => {
+    stopAllMedia(); 
+    window.open('https://nhom4detainghiencuukhoahoc.my.canva.site/mamcomngayxua', '_blank');
+});
+</script>
+</body>
+</html>

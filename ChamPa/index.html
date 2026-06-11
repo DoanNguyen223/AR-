@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AR Champa</title>
+
+<script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mind-ar@1.2.2/dist/mindar-image-aframe.prod.js"></script>
+
+<style>
+body { margin:0; overflow:hidden; }
+</style>
+</head>
+
+<body>
+
+<a-scene
+mindar-image="imageTargetSrc: ./targets.mind; uiScanning: no;"
+color-space="sRGB"
+renderer="colorManagement: true"
+vr-mode-ui="enabled: false"
+device-orientation-permission-ui="enabled: false">
+
+<a-assets>
+
+<!-- 3D MODEL -->
+<a-asset-item id="m6" src="./champa6.glb"></a-asset-item>
+<a-asset-item id="m7" src="./champa7.glb"></a-asset-item>
+<a-asset-item id="m9" src="./champa9.glb"></a-asset-item>
+<a-asset-item id="m10" src="./champa10.glb"></a-asset-item>
+<a-asset-item id="m11" src="./champa11.glb"></a-asset-item>
+<a-asset-item id="m12" src="./champa12.glb"></a-asset-item>
+<a-asset-item id="m13" src="./champa13.glb"></a-asset-item>
+
+</a-assets>
+
+<a-camera position="0 0 0" look-controls="enabled:false"></a-camera>
+
+<!-- 1 -->
+<a-entity mindar-image-target="targetIndex: 0"></a-entity>
+
+<!-- 2 -->
+<a-entity mindar-image-target="targetIndex: 1"></a-entity>
+
+<!-- 3 -->
+<a-entity mindar-image-target="targetIndex: 2"></a-entity>
+
+<!-- 4 -->
+<a-entity mindar-image-target="targetIndex: 3"></a-entity>
+
+<!-- 5 -->
+<a-entity mindar-image-target="targetIndex: 4"></a-entity>
+
+<!-- 6 -->
+<a-entity mindar-image-target="targetIndex: 5">
+<a-entity gltf-model="#m6" rotation="90 0 0" scale="1 1 1"></a-entity>
+</a-entity>
+
+<!-- 7 -->
+<a-entity mindar-image-target="targetIndex: 6">
+<a-entity gltf-model="#m7" rotation="90 0 0" scale="1 1 1"></a-entity>
+</a-entity>
+
+<!-- 8 -->
+<a-entity mindar-image-target="targetIndex: 7">
+<a-plane color="#222" height="1.5" width="1">
+<a-text 
+value="SẮP HOÀN THIỆN"
+align="center"
+color="white"
+width="2"
+position="0 0 0.01">
+</a-text>
+</a-plane>
+</a-entity>
+
+<!-- 9 -->
+<a-entity mindar-image-target="targetIndex: 8">
+<a-entity gltf-model="#m9" rotation="90 0 0" scale="1 1 1"></a-entity>
+</a-entity>
+
+<!-- 10 (QUAN TRỌNG) -->
+<a-entity mindar-image-target="targetIndex: 9">
+<a-entity gltf-model="#m10" rotation="-90 180 0" scale="1 1 1"></a-entity>
+</a-entity>
+
+<!-- 11 (TĂNG LỚN RÕ RỆT) -->
+<a-entity mindar-image-target="targetIndex: 10">
+<a-entity gltf-model="#m11" rotation="-90 180 0" scale="2 2 2"></a-entity>
+</a-entity>
+
+<!-- 12 -->
+<a-entity mindar-image-target="targetIndex: 11">
+<a-entity gltf-model="#m12" rotation="-90 0 0" scale="1 1 1"></a-entity>
+</a-entity>
+
+<!-- 13 -->
+<a-entity mindar-image-target="targetIndex: 12">
+<a-entity gltf-model="#m13" rotation="-90 0 0" scale="1 1 1"></a-entity>
+</a-entity>
+
+</a-scene>
+
+</body>
+</html>
